@@ -1,0 +1,74 @@
+name: Sync from LineageOS and Auto-Convert to CLO
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Weekly sync
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: 'LineageOS branch to fetch from'
+        required: true
+        default: 'lineage-24.0'
+
+jobs:
+  sync_and_convert:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream LineageOS
+        run: |
+          git remote add upstream https://github.com/LineageOS/android_device_oneplus_lexus.git || true
+          git fetch upstream ${{ github.event.inputs.upstream_branch || 'lineage-24.0' }}
+
+      - name: Run Conversion Script
+        run: |
+          python3 - << 'PY'
+          import os, re, shutil
+          
+          # Convert lineage_lexus.mk
+          if os.path.exists("lineage_lexus.mk"):
+              with open("lineage_lexus.mk") as f:
+                  txt = f.read()
+              clean = re.sub(r'# Inherit some common Lineage stuff\.
+\$\(call inherit-product, vendor/lineage/config/common_full_phone\.mk\)
+?', '', txt)
+              with open("clo_lexus.mk", "w") as f:
+                  f.write(clean.replace("PRODUCT_NAME := lineage_lexus", "PRODUCT_NAME := clo_lexus"))
+              with open("aosp_lexus.mk", "w") as f:
+                  f.write(clean.replace("PRODUCT_NAME := lineage_lexus", "PRODUCT_NAME := aosp_lexus"))
+              os.remove("lineage_lexus.mk")
+
+          # Update AndroidProducts.mk
+          with open("AndroidProducts.mk", "w") as f:
+              f.write("# SPDX-FileCopyrightText: The LineageOS Project\n# SPDX-License-Identifier: Apache-2.0\n\nPRODUCT_MAKEFILES := \\\n    $(LOCAL_DIR)/clo_lexus.mk \\\n    $(LOCAL_DIR)/aosp_lexus.mk\n\nCOMMON_LUNCH_CHOICES := \\\n    clo_lexus-userdebug \\\n    clo_lexus-user \\\n    aosp_lexus-userdebug \\\n    aosp_lexus-user\n")
+
+          # Clean device.mk
+          if os.path.exists("device.mk"):
+              with open("device.mk") as f:
+                  lines = f.readlines()
+              with open("device.mk", "w") as f:
+                  for l in lines:
+                      if "overlay-lineage" not in l and "OPLUS_LINEAGE_LIVEDISPLAY_HAL" not in l and "OPLUS_LINEAGE_TOUCH_HAL" not in l:
+                          f.write(l)
+
+          if os.path.exists("overlay-lineage"):
+              shutil.rmtree("overlay-lineage")
+          PY
+
+      - name: Commit and Push changes
+        run: |
+          git add -A
+          git commit -m "Auto-convert upstream LineageOS changes to CLO/AOSP" || echo "No changes to commit"
+          git push origin HEAD
